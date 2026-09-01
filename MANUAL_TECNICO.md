@@ -18,11 +18,16 @@ Sistema de apoio ao diagnóstico em saúde feminina com classificação de risco
 6. [Metodologia de desenvolvimento dos notebooks](#6-metodologia-de-desenvolvimento-dos-notebooks)
 7. [Estudo 1 — Câncer de mama (Wisconsin)](#7-estudo-1--câncer-de-mama-wisconsin)
 8. [Estudo 2 — SOP (PCOS)](#8-estudo-2--sop-pcos)
-9. [Contrato de dados notebooks → web](#9-contrato-de-dados-notebooks--web)
-10. [Aplicação web — backend (FastAPI)](#10-aplicação-web--backend-fastapi)
-11. [Aplicação web — frontend](#11-aplicação-web--frontend)
-12. [Guia de execução completo](#12-guia-de-execução-completo)
-13. [Limitações conhecidas e pontos de atenção](#13-limitações-conhecidas-e-pontos-de-atenção)
+9. [Relatório técnico consolidado](#9-relatório-técnico-consolidado)
+   - [9.1 Discussões da análise exploratória](#91-discussões-da-análise-exploratória)
+   - [9.2 Estratégias de pré-processamento](#92-estratégias-de-pré-processamento)
+   - [9.3 Modelos usados e porquê](#93-modelos-usados-e-porquê)
+   - [9.4 Resultados e interpretação dos dados](#94-resultados-e-interpretação-dos-dados)
+10. [Contrato de dados notebooks → web](#10-contrato-de-dados-notebooks--web)
+11. [Aplicação web — backend (FastAPI)](#11-aplicação-web--backend-fastapi)
+12. [Aplicação web — frontend](#12-aplicação-web--frontend)
+13. [Guia de execução completo](#13-guia-de-execução-completo)
+14. [Limitações conhecidas e pontos de atenção](#14-limitações-conhecidas-e-pontos-de-atenção)
 
 ---
 
@@ -357,7 +362,86 @@ Monta e valida o contrato de dados consumido pela rota `/` do dashboard, sem ret
 
 ---
 
-## 9. Contrato de dados notebooks → web
+## 9. Relatório técnico consolidado
+
+Esta seção reúne, em formato de relatório, as quatro discussões centrais do trabalho — o que a análise exploratória revelou, como os dados foram preparados, por que cada modelo foi escolhido e o que os resultados significam — cruzando os dois estudos. O detalhe operacional (célula a célula) está nas seções 7 e 8.
+
+### 9.1 Discussões da análise exploratória
+
+**Câncer de mama (Wisconsin).** A base tem 569 amostras e 30 atributos numéricos, todos derivados de imagens de aspirado por agulha fina (FNA), organizados em três famílias por sufixo: `_mean` (valor médio da característica no núcleo celular), `_se` (erro padrão, isto é, incerteza da medida) e `_worst` (pior/maior valor observado). A EDA sustentou três conclusões que guiaram o resto do pipeline:
+
+1. **O problema é bem separável.** As médias por classe mostram distâncias grandes nas features de tamanho e de irregularidade do contorno: `radius_mean` 12,15 (benigno) vs 17,46 (maligno), `area_mean` 462,8 vs 978,4, `concave points_mean` 0,026 vs 0,088, `area_worst` 558,9 vs 1422,3. Os boxplots por diagnóstico confirmam separação visual em quase todas as famílias — o que antecipa (e depois se confirma) que modelos relativamente simples atingiriam desempenho alto.
+2. **O desbalanceamento é leve, mas real** (62,7% benigno / 37,3% maligno) — suficiente para justificar split estratificado e `class_weight="balanced"`, mas não reamostragem agressiva.
+3. **Há colinearidade estrutural forte.** O heatmap de correlação (e depois a varredura numérica do notebook 03) mostra que raio, perímetro e área medem essencialmente a mesma grandeza física (r = 0,998 entre `radius_mean` e `perimeter_mean`; 21 pares com |r| > 0,9). A decisão foi **não remover** atributos — os modelos escolhidos toleram colinearidade em termos de predição — mas registrar que isso **dilui a interpretação de importância** (a relevância de "tamanho do tumor" se espalha entre variáveis redundantes).
+
+Qualidade dos dados: zero ausentes e zero duplicatas; as únicas colunas descartadas foram `id` e `Unnamed: 32` (coluna vazia do CSV).
+
+**SOP (PCOS).** A base é muito menor em informação: 541 pacientes e apenas **3 biomarcadores** (beta-HCG em duas medições e AMH), com 32,7% de casos positivos. Aqui a EDA foi decisiva, porque revelou os três problemas que definem o teto de desempenho do estudo:
+
+1. **Censura por limite de detecção.** O valor `1.99` aparece 191 vezes em beta-HCG I e **307 vezes** (mais da metade da base) em beta-HCG II. Não é um valor real: é o código do laboratório para "abaixo do limite de detecção do exame". Tratá-lo como número contaminaria qualquer estatística — a mediana de beta-HCG II é literalmente 1,99 nas duas classes. Essa descoberta virou a principal estratégia de pré-processamento (censura → ausente + flag).
+2. **AMH é o sinal dominante.** Média de 4,54 ng/mL nas pacientes sem SOP contra **7,84 ng/mL** nas com SOP (medianas 3,2 vs 5,9) — consistente com a literatura clínica, em que AMH elevado se associa à SOP. Beta-HCG I também difere (mediana 13,7 vs 70,5), mas com caudas extremas (desvio padrão ≈ 3.540, máximo 32.460), o que motivou histogramas em escala log na EDA e imputação por mediana no pré-processamento.
+3. **Rótulos conflitantes.** Foram identificados **10 grupos de pacientes com o perfil bioquímico idêntico e diagnósticos opostos** — em geral perfis totalmente censurados (1,99/1,99) com o mesmo AMH. Isso significa que nenhum modelo, por melhor que seja, consegue separar esses casos: é um **erro irredutível** documentado desde a EDA, e a explicação honesta para o desempenho modesto observado depois.
+
+### 9.2 Estratégias de pré-processamento
+
+As estratégias comuns aos dois estudos formam a espinha dorsal metodológica:
+
+- **Encoding do alvo com a classe positiva clínica = 1** (maligno; com SOP). A escolha não é cosmética: define qual recall o pipeline inteiro otimiza e reporta.
+- **Split estratificado 80/20 com semente fixa 42** (`train_test_split(..., stratify=rotulo, random_state=42)`), preservando a proporção de classes nos dois conjuntos (mama: 455/114; PCOS: 432/109).
+- **Imputação por mediana + `StandardScaler`**, empacotados num `ColumnTransformer`. A mediana foi escolhida por robustez a outliers (crítico no PCOS, com caudas de beta-HCG na casa das dezenas de milhares); a padronização é exigida pela regressão logística e pelo SVM RBF, sensíveis à escala.
+- **Prevenção de vazamento como decisão de arquitetura:** o pré-processador é apenas *instanciado* no notebook de pré-processamento e só é *fitado* dentro do `Pipeline(preprocessador → classificador)` no notebook de treino — ou seja, mediana e média/desvio do scaler são aprendidos exclusivamente no treino. O conjunto de teste atravessa os artefatos sem ser tocado até o notebook de avaliação, que é o único a computar métricas.
+- **Desbalanceamento tratado por ponderação de classes** (`class_weight="balanced"`), não por reamostragem (sem SMOTE/undersampling) — adequado ao grau de desbalanceamento (~33–37% de positivos) e evita amostras sintéticas em dados clínicos.
+
+Estratégias específicas por estudo:
+
+- **Mama:** nenhuma feature foi criada nem removida (além de `id`/`Unnamed: 32`). A colinearidade identificada foi deliberadamente mantida, com a justificativa registrada de padronizar escalas sem descartar informação nesta fase.
+- **PCOS:** o pré-processamento é onde o estudo ganha (ou perderia) qualidade. Em ordem: (1) **valores censurados 1,99 → `NaN`**, para a imputação tratá-los como desconhecidos em vez de números válidos; (2) **flags `beta_i_censurado`/`beta_ii_censurado`** preservando a informação de que o valor estava abaixo do limite — a *ausência* aqui é informativa (beta-HCG indetectável é um estado clínico, não falta de dado); (3) **engenharia de atributos** expandindo 3 biomarcadores em 9 features: `beta_hcg_max`, `beta_hcg_diff` e `beta_hcg_ratio` capturam a relação entre as duas medições de beta-HCG, e `amh_alto` (corte em 4,5 ng/mL) discretiza o principal biomarcador num indicador clínico; (4) descarte dos identificadores (`Sl. No`, `Patient File No.`).
+
+### 9.3 Modelos usados e porquê
+
+Os **mesmos cinco algoritmos** foram treinados nos dois estudos, escolhidos para cobrir famílias diferentes de hipóteses (linear, árvore única, margem não linear, ensembles de bagging e de boosting) e permitir um comparativo honesto no dashboard:
+
+| Modelo | Por que foi incluído |
+|---|---|
+| **Regressão Logística** | Baseline linear probabilístico e interpretável — em triagem clínica, fornecer P(doença) calibrável e coeficientes legíveis é valioso por si só. Todo o comparativo se ancora nela. |
+| **Árvore de Decisão** | Captura relações não lineares com regras inspecionáveis e fornece **importância global de atributos** nativa (usada na explicabilidade e no dashboard). Treinada sem poda, serve também de referência de overfitting de modelo único. |
+| **SVM (SVC RBF calibrado)** | Fronteira de decisão não linear com `class_weight="balanced"`. Como o SVC não expõe `predict_proba`, foi envolvido em `CalibratedClassifierCV` (calibração sigmoide/Platt, CV interna de 5 folds) — decisão necessária porque o dashboard e o critério clínico dependem de probabilidades confiáveis. |
+| **Gradient Boosting** | Ensemble sequencial que corrige erros dos estágios anteriores; hipótese de capturar interações finas entre atributos (ou entre biomarcadores, no PCOS). |
+| **Random Forest** | Ensemble de bagging: muitas árvores (300) para reduzir a variância da árvore única, com balanceamento de classes. Tende a ser o candidato forte "sem tuning". |
+
+Duas decisões transversais completam o desenho: **nenhum tuning de hiperparâmetros** (valores fixos/default com semente 42 — o objetivo da fase é comparar famílias de modelos com um protocolo limpo, não espremer décimos de ponto) e **critério de seleção clínico**: o "melhor modelo" é o de maior **recall da classe positiva**, porque o falso negativo (doente classificado como saudável) atrasa diagnóstico e tratamento, enquanto o falso positivo custa exames complementares — um erro recuperável. Acurácia, F1 e precisão são reportados para transparência, não para seleção.
+
+### 9.4 Resultados e interpretação dos dados
+
+**Câncer de mama — resultados no holdout (114 amostras: 42 malignas, 72 benignas):**
+
+| Modelo | Acurácia | Recall (maligno) | F1 | Precisão | Falsos negativos |
+|---|---|---|---|---|---|
+| Regressão Logística | 96,5% | 92,9% | 95,1% | 97,5% | 3 |
+| Árvore de Decisão | 93,0% | 90,5% | 90,5% | 90,5% | 4 |
+| **SVM (vencedor)** | **98,2%** | **97,6%** | **97,6%** | **97,6%** | **1** |
+| Gradient Boosting | 96,5% | 90,5% | 95,0% | 100% | 4 |
+| Random Forest | 97,4% | 92,9% | 96,3% | 100% | 3 |
+
+Interpretação: todos os modelos ficam acima de 90% de recall — coerente com a separabilidade vista na EDA — mas o **SVM calibrado** se destaca ao errar **um único caso maligno em 42**, com apenas 1 falso positivo. Gradient Boosting e Random Forest atingem precisão perfeita (nenhum falso alarme), porém ao custo de 3–4 malignos perdidos — exatamente o trade-off que o critério clínico resolve em favor do SVM. A explicabilidade converge com a EDA: o SHAP do SVM aponta `texture_worst`, `radius_worst`, `perimeter_worst`, `area_worst` e `concave points_worst` como os maiores contribuintes para a predição de malignidade (tamanho + irregularidade do núcleo no pior campo observado), e a importância Gini da Árvore concentra 73% em `perimeter_worst`. A leitura registrada nos notebooks é cautelosa: **importância ≠ causalidade**, e a colinearidade radius/perimeter/area espalha o crédito entre variáveis redundantes — o SHAP serve para auditar e comunicar o modelo, não para inferência biológica. No caso local demonstrado (waterfall), uma amostra benigna recebe P(maligno) = 0,07%, ilustrando o uso da explicação individual como instrumento de auditoria caso a caso.
+
+**SOP (PCOS) — resultados no holdout (109 amostras, 36 positivas):**
+
+| Modelo | Acurácia | Recall (PCOS) | F1 |
+|---|---|---|---|
+| Regressão Logística | 65,1% | 52,8% | 50,0% |
+| Árvore de Decisão | 64,2% | 47,2% | 46,6% |
+| SVM (calibrado) | 63,3% | 41,7% | 42,9% |
+| Gradient Boosting | 64,2% | 36,1% | 40,0% |
+| **Random Forest (vencedor)** | **66,1%** | **55,6%** | **52,0%** |
+
+Interpretação: o contraste com o estudo da mama é o resultado mais instrutivo do projeto. Nenhum modelo supera em acurácia a baseline trivial "prever sempre negativo" (~67%) — e isso **não é falha de modelagem, é limite dos dados**: com apenas 3 biomarcadores, dois deles censurados na maioria dos registros, e 10 perfis bioquímicos idênticos com rótulos opostos, o teto de separabilidade é baixo. O valor dos modelos está no recall da classe positiva: o **Random Forest** identifica 55,6% das pacientes com SOP (contra 0% da baseline), que é o que importa numa triagem. A importância de atributos (Árvore de Decisão, exportada ao dashboard) confirma o AMH e seus derivados como o sinal dominante, como a EDA antecipava. A conclusão registrada nos notebooks é a correta do ponto de vista clínico: esses biomarcadores isolados são insuficientes para diagnóstico, e o caminho de melhoria é **mais dados** (o dataset completo de PCOS tem ~40 variáveis clínicas) antes de mais engenharia de modelo.
+
+**Leitura conjunta.** Os dois estudos, com o mesmo protocolo e os mesmos cinco algoritmos, entregam o par de lições que o comparativo do dashboard materializa: quando as features carregam sinal (mama), qualquer família de modelo funciona e a disputa se decide no erro clinicamente relevante; quando não carregam (PCOS), nenhum ensemble compensa, e a honestidade metodológica — reportar a limitação em vez de mascará-la — é o resultado. Em ambos os casos vale o aviso permanente do projeto: os modelos **apoiam** a decisão; a palavra final é do profissional de saúde.
+
+---
+
+## 10. Contrato de dados notebooks → web
 
 O "contrato" é a interface entre as duas metades do projeto. Por estudo, são sempre 4 arquivos:
 
@@ -377,9 +461,9 @@ Decisões de design relevantes:
 
 ---
 
-## 10. Aplicação web — backend (FastAPI)
+## 11. Aplicação web — backend (FastAPI)
 
-### 10.1 `src/web/app.py`
+### 11.1 `src/web/app.py`
 
 Cria o app FastAPI (`title="Clinical Model Lab"`, versão 1.1.0), registra os dois routers de API, monta `/static` (StaticFiles) e serve duas páginas Jinja2:
 
@@ -390,7 +474,7 @@ Cria o app FastAPI (`title="Clinical Model Lab"`, versão 1.1.0), registra os do
 
 A documentação automática (Swagger) fica em `/docs`.
 
-### 10.2 Camada de serviços (`services/`)
+### 11.2 Camada de serviços (`services/`)
 
 `data_loader.py` (mama) e `pcos_data_loader.py` (PCOS) são espelhos um do outro:
 
@@ -400,7 +484,7 @@ A documentação automática (Swagger) fica em `/docs`.
 - `clear_cache()` invalida os quatro caches — usado pelo endpoint de recarga para refletir uma nova execução dos notebooks sem reiniciar o servidor.
 - `records()` converte DataFrames em registros JSON-safe (via `to_json`/`json.loads`, tratando tipos NumPy).
 
-### 10.3 Endpoints da API
+### 11.3 Endpoints da API
 
 Router do estudo mama com prefixo `/api` (`api/routes.py`); router do PCOS com prefixo `/api/pcos` (`api/pcos_routes.py`), quase idêntico. Endpoints:
 
@@ -423,7 +507,7 @@ Router do estudo mama com prefixo `/api` (`api/routes.py`); router do PCOS com p
 - **Ordenação com allowlist:** `sort` só aceita colunas conhecidas (`id`, `diagnostico_real`, `n_modelos_acertaram`, `amplitude_probabilidade`, `prob_*`, `confianca_*`); qualquer outra coluna → 400. Evita ordenação por colunas arbitrárias do DataFrame.
 - **Resposta compacta:** apenas as colunas necessárias para a tabela (as 30 features ficam de fora da listagem e só aparecem no endpoint de detalhe), + metadados de paginação, lista de modelos e de atributos.
 
-### 10.4 Padrões do backend
+### 11.4 Padrões do backend
 
 - Erros de dados → 503 com instrução de qual notebook executar; erros de uso da API → 400/404 com detalhe.
 - Sem banco de dados, sem autenticação, sem estado mutável (exceto o cache): o servidor é um leitor tipado do contrato.
@@ -431,11 +515,11 @@ Router do estudo mama com prefixo `/api` (`api/routes.py`); router do PCOS com p
 
 ---
 
-## 11. Aplicação web — frontend
+## 12. Aplicação web — frontend
 
 SPA-like em **JavaScript vanilla + Chart.js 4** (via CDN), sem framework nem build step. Um arquivo JS por estudo (`app.js` para mama, `pcos.js` para PCOS — mesma arquitetura, com pequenas variações), CSS único compartilhado (`app.css`, ~840 linhas, tema dark/glassmorphism com efeitos "ambient", responsivo com sidebar colapsável).
 
-### 11.1 Estrutura das páginas
+### 12.1 Estrutura das páginas
 
 Ambas as páginas têm a mesma anatomia (seções ancoradas na sidebar):
 
@@ -444,7 +528,7 @@ Ambas as páginas têm a mesma anatomia (seções ancoradas na sidebar):
 3. **Gráficos / Biomarcadores:** cards de inventário (registros brutos/usados/treino/teste), doughnut da distribuição de classes com seletor de conjunto (completo/treino/teste), histograma comparativo por feature e conjunto (gráfico de linha com área preenchida, uma série por classe), **heatmap de correlação** renderizado como grid CSS (triângulo inferior, com reimplementação em JS do colormap `coolwarm` do Matplotlib para manter consistência visual com os notebooks), matriz de confusão por modelo (grid 2×2 com células de erro destacadas) e importância de atributos (barras horizontais, top-N configurável no estudo mama).
 4. **Amostras:** tabela comparativa servida por `/api/amostras` com filtros (diagnóstico real, modelo de referência, acerto/erro — habilitado só com modelo selecionado —, consenso), ordenação clicável nos cabeçalhos (delegada ao backend), paginação, e barra de probabilidade por célula colorida por acerto/erro. A coluna **Amplitude** tem tooltip que abre a P(positivo) de cada um dos 5 modelos com destaque de máx/mín — instrumento para investigar casos onde os modelos divergem. Clicar na amostra abre um **modal de detalhe** com a predição de cada modelo e todos os atributos clínicos (via `/api/amostras/{id}`).
 
-### 11.2 Padrões de implementação do JS
+### 12.2 Padrões de implementação do JS
 
 - **Estado central** (`state`): métricas, lista de modelos, página/ordenação corrente e referências das instâncias Chart.js (destruídas antes de re-renderizar para evitar leaks).
 - **Carga inicial:** `Promise.all` de `/api/metricas` + `/api/graficos`, depois renderização de todas as seções e primeira página de amostras. Em erro (export ausente), toast com a mensagem do backend e dica "Execute o notebook 08".
@@ -455,7 +539,7 @@ Ambas as páginas têm a mesma anatomia (seções ancoradas na sidebar):
 
 ---
 
-## 12. Guia de execução completo
+## 13. Guia de execução completo
 
 Pré-requisito: Python 3 instalado no Windows (o script escolhe a versão mais recente disponível).
 
@@ -500,7 +584,7 @@ Cada notebook valida a existência do artefato do anterior; se pular uma etapa, 
 
 ---
 
-## 13. Limitações conhecidas e pontos de atenção
+## 14. Limitações conhecidas e pontos de atenção
 
 Registradas nos próprios notebooks ou identificadas na análise do código:
 
