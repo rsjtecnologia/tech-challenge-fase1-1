@@ -148,6 +148,8 @@ tech-challenge-fase1/
 
 ---
 
+
+
 ## 5. Ambiente e automação
 
 O projeto foi desenvolvido para **Windows + PowerShell**, com três scripts de automação e um executor de notebooks em Python.
