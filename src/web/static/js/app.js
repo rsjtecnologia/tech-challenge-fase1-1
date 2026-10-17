@@ -38,6 +38,60 @@ function showToast(message) {
   showToast.timer = window.setTimeout(() => toast.classList.remove("show"), 4300);
 }
 
+async function generateInterpretation() {
+  const button = $("#interpretButton");
+  const output = $("#interpretationOutput");
+  $("#interpretationComparisonSection").hidden = false;
+  button.disabled = true;
+  button.textContent = "Gerando…";
+  output.textContent = "Gerando uma interpretação das métricas agregadas. Com Ollama local em CPU, isso pode levar vários minutos.";
+  try {
+    const result = await request("/api/interpretacao", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ estudo: "breast_cancer" }),
+    });
+    const data = result.interpretation;
+    output.innerHTML = `
+      <p class="interpretation-source">${result.source === "llm" ? "Gerado por provedor LLM" : "Interpretação local por regras (sem LLM)"}</p>
+      <p>${escapeHtml(data.summary)}</p>
+      <h4>Principais observações</h4>
+      <ul>${data.findings.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>
+      <h4>Limitações</h4>
+      <ul>${data.limitations.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>
+      <p><strong>${escapeHtml(data.disclaimer)}</strong></p>
+      <p class="llm-quality">Rubrica de qualidade: ${result.quality_evaluation.score}/${result.quality_evaluation.maximum}</p>
+      ${result.quality_evaluation.passed ? "" : "<p><strong>Atenção: a resposta não passou em todos os critérios automáticos. Revise o texto e confira as afirmações nas métricas originais antes de utilizá-lo.</strong></p>"}
+    `;
+  } catch (error) {
+    output.textContent = `Não foi possível gerar a interpretação: ${error.message}`;
+    showToast(error.message);
+  } finally {
+    button.disabled = false;
+    button.textContent = "Gerar interpretação";
+  }
+}
+
+async function loadGeneticComparison() {
+  const container = $("#geneticComparison");
+  try {
+    const result = await request("/api/otimizacao/breast_cancer");
+    renderInterpretationComparison(result.models);
+    container.innerHTML = Object.entries(result.models).map(([name, model]) => `
+      <article class="model-card">
+        <h4>${escapeHtml(name)}</h4>
+        <span class="model-score">${percent(model.baseline_metrics.recall)} → ${percent(model.optimized_metrics.recall)}</span>
+        <small>Recall baseline → GA · F1 ${percent(model.baseline_metrics.f1)} → ${percent(model.optimized_metrics.f1)}</small>
+        <small>Acurácia ${percent(model.baseline_metrics.accuracy)} → ${percent(model.optimized_metrics.accuracy)}</small>
+        <div class="model-tags"><span class="tag good">GA: ${escapeHtml(model.selected_experiment)}</span></div>
+      </article>
+    `).join("");
+  } catch (error) {
+    container.textContent = error.message;
+    $("#interpretationComparison").textContent = error.message;
+  }
+}
+
 function renderOverview(metrics) {
   const best = metrics.por_modelo[metrics.melhor_modelo];
   $("#contractVersion").textContent = metrics.versao_contrato;
@@ -743,6 +797,7 @@ async function loadDashboard() {
     renderModelConfig();
     renderChartsSection();
     populateModelFilter();
+    await loadGeneticComparison();
     await loadSamples();
   } catch (error) {
     showToast(error.message);
@@ -751,6 +806,7 @@ async function loadDashboard() {
 }
 
 function bindEvents() {
+  $("#interpretButton").addEventListener("click", generateInterpretation);
   $("#configModel").addEventListener("change", renderModelConfig);
   $("#classSplit").addEventListener("change", renderClassChart);
   $("#featureSelect").addEventListener("change", renderFeatureChart);

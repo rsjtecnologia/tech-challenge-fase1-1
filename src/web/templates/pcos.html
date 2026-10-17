@@ -10,6 +10,7 @@
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@600;700;800&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="{{ url_for('static', path='/css/app.css') }}">
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js" defer></script>
+  <script src="{{ url_for('static', path='/js/interpretation.js') }}" defer></script>
   <script src="{{ url_for('static', path='/js/pcos.js') }}" defer></script>
 </head>
 <body>
@@ -33,6 +34,10 @@
       <a class="dataset-link active" href="/pcos">
         <span class="dataset-icon">◉</span>
         <span>SOP (PCOS)</span>
+      </a>
+      <a class="dataset-link" href="/rotas">
+        <span class="dataset-icon">⌖</span>
+        <span>Rotas médicas · Fase 2</span>
       </a>
     </nav>
 
@@ -96,6 +101,35 @@
           <article><span>Recall PCOS</span><strong id="metricRecall">—</strong><small>critério principal</small></article>
           <article><span>F1 PCOS</span><strong id="metricF1">—</strong><small>equilíbrio</small></article>
           <article><span>Precisão</span><strong id="metricPrecision">—</strong><small>positivos corretos</small></article>
+        </div>
+      </section>
+
+      <section class="glass-card llm-card" aria-labelledby="llmHeading">
+        <div class="card-heading">
+          <div>
+            <h3 id="llmHeading">Interpretação em linguagem natural</h3>
+            <p>Explicação agregada dos experimentos da Fase 2; não analisa pacientes.</p>
+          </div>
+          <button class="clear-button" id="interpretButton" type="button">Gerar interpretação</button>
+        </div>
+        <div id="interpretationOutput" class="llm-output" aria-live="polite">
+          Execute a otimização genética para gerar a interpretação local; configure um provedor LLM opcionalmente para usar geração por LLM.
+        </div>
+        <div id="interpretationComparisonSection" hidden>
+        <h4>Dados para conferir a interpretação</h4>
+        <div id="interpretationComparison" class="interpretation-comparison" role="region" aria-label="Comparação baseline e otimizado" tabindex="0">Carregando métricas do experimento…</div>
+        </div>
+      </section>
+
+      <section class="glass-card genetic-card" aria-labelledby="geneticHeading">
+        <div class="card-heading">
+          <div>
+            <h3 id="geneticHeading">Baseline × otimização genética</h3>
+            <p>Comparação dos modelos no mesmo holdout; selecionados por CV no treino.</p>
+          </div>
+        </div>
+        <div id="geneticComparison" class="model-cards" aria-live="polite">
+          Execute a otimização da Fase 2 para carregar a comparação.
         </div>
       </section>
 

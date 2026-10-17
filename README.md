@@ -19,6 +19,18 @@ Dois estudos implementados:
 
 Artefatos gerados em `src/db/outputs/`; o dashboard em `src/web/` consome os exports de cada estudo.
 
+## Fase 2 — Projeto 1
+
+A extensão da Fase 2 implementa otimização genética dos modelos, interpretação agregada por LLM e logging para execução local. A entrega contém código-fonte e documentação; não utiliza Docker, Kubernetes ou deploy em nuvem. Consulte [FASE2_PROJETO1.md](./FASE2_PROJETO1.md) para arquitetura, execução, configuração do provedor LLM e limites do protótipo.
+
+O [Projeto 2 da Fase 2](./FASE2_PROJETO2_ROTAS.md) adiciona otimização genética de rotas para múltiplos veículos, com prioridades, capacidade, autonomia e cadeia fria, visualização geográfica sintética offline e assistente LLM opcional para instruções, relatórios e perguntas. A página fica em `/rotas`.
+
+Execução de demonstração:
+
+```powershell
+python -m src.optimization.cli --study breast_cancer --model "Random Forest"
+```
+
 ---
 
 ## Início rápido (Windows)
